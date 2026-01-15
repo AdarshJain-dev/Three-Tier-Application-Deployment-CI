@@ -6,6 +6,8 @@ WORKDIR /app
 # Copy package files first for caching
 COPY package*.json ./
 
+COPY global-bundle.pem /app/global-bundle.pem
+
 # Install only production dependencies first
 RUN npm ci --only=production && npm cache clean --force
 
