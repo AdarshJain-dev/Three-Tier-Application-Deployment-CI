@@ -31,9 +31,15 @@ const connectWithRetry = async (retries = 10, delay = 3000) => {
         user: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME,
-        connectionLimit: 10,
+        port: 3306,
+      
         waitForConnections: true,
-        ssl: { rejectUnauthorized: false } // Required for AWS RDS
+        connectionLimit: 10,
+        queueLimit: 0,
+      
+        ssl: {
+          ca: fs.readFileSync('/app/global-bundle.pem')
+        }
       });
 
       // Test connection
