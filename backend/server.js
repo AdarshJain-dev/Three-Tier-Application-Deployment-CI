@@ -1,11 +1,11 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-const fs = require('fs');
 
 let db;
 
@@ -32,15 +32,15 @@ const connectWithRetry = async (retries = 10, delay = 3000) => {
         user: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME,
-        port: 3306,
-      
+        port: Number(process.env.DB_PORT || 3306),
+
         waitForConnections: true,
         connectionLimit: 10,
         queueLimit: 0,
-      
-        ssl: {
-          ca: fs.readFileSync('/app/global-bundle.pem')
-        }
+        connectTimeout: 20000,
+
+        // ✅ FIX: RDS-compatible SSL handling (stable for MySQL 8)
+        ssl: 'Amazon RDS'
       });
 
       // Test connection
@@ -105,12 +105,10 @@ const ensureTables = async (db) => {
 
     /* ---------------- Health Probes (K8s / Istio) ---------------- */
 
-    // Liveness probe
     app.get('/health', (req, res) => {
       res.status(200).json({ status: 'UP' });
     });
 
-    // Readiness probe
     app.get('/ready', async (req, res) => {
       try {
         await db.query('SELECT 1');
@@ -205,15 +203,11 @@ const ensureTables = async (db) => {
       res.json({ message: 'Teacher deleted successfully' });
     });
 
-    /* ---------------- Graceful Shutdown ---------------- */
-
     process.on('SIGINT', async () => {
       console.log('🛑 Shutting down server...');
       await db.end();
       process.exit(0);
     });
-
-    /* ---------------- Start Server ---------------- */
 
     app.listen(3500, () => {
       console.log('🚀 Backend server running on port 3500');
