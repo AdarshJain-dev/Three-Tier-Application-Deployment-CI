@@ -1,7 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
-const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -39,13 +38,13 @@ const connectWithRetry = async (retries = 10, delay = 3000) => {
         queueLimit: 0,
         connectTimeout: 20000,
 
-        // ✅ FIX: RDS-compatible SSL handling (stable for MySQL 8)
-        ssl: 'Amazon RDS'
+        // Local / Docker MySQL safe SSL
+        ssl: {
+          rejectUnauthorized: false
+        }
       });
 
-      // Test connection
       await pool.query('SELECT 1');
-
       console.log(`✅ Connected to MySQL (Attempt ${attempt})`);
       return pool;
 
@@ -71,9 +70,9 @@ const ensureTables = async (db) => {
     await db.query(`
       CREATE TABLE IF NOT EXISTS student (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255),
-        roll_number VARCHAR(255),
-        class VARCHAR(255),
+        name VARCHAR(255) NOT NULL,
+        roll_number VARCHAR(255) NOT NULL,
+        class_name VARCHAR(255) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -81,9 +80,9 @@ const ensureTables = async (db) => {
     await db.query(`
       CREATE TABLE IF NOT EXISTS teacher (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255),
-        subject VARCHAR(255),
-        class VARCHAR(255),
+        name VARCHAR(255) NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        class_name VARCHAR(255) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -103,7 +102,7 @@ const ensureTables = async (db) => {
     db = await connectWithRetry();
     await ensureTables(db);
 
-    /* ---------------- Health Probes (K8s / Istio) ---------------- */
+    /* ---------------- Health Probes ---------------- */
 
     app.get('/health', (req, res) => {
       res.status(200).json({ status: 'UP' });
@@ -113,22 +112,10 @@ const ensureTables = async (db) => {
       try {
         await db.query('SELECT 1');
         res.status(200).json({ status: 'READY' });
-      } catch (err) {
+      } catch {
         res.status(500).json({ status: 'NOT_READY' });
       }
     });
-
-    /* ---------------- Utility Functions ---------------- */
-
-    const getLastStudentID = async () => {
-      const [result] = await db.query('SELECT MAX(id) AS lastID FROM student');
-      return result[0].lastID || 0;
-    };
-
-    const getLastTeacherID = async () => {
-      const [result] = await db.query('SELECT MAX(id) AS lastID FROM teacher');
-      return result[0].lastID || 0;
-    };
 
     /* ---------------- Routes ---------------- */
 
@@ -147,61 +134,83 @@ const ensureTables = async (db) => {
       res.json(data);
     });
 
+    /* ---------------- Add Student ---------------- */
+
     app.post('/addstudent', async (req, res) => {
-      const { name, rollNo, class: className } = req.body;
-      const nextID = (await getLastStudentID()) + 1;
+      try {
+        const { name, rollNo, class: className } = req.body;
 
-      await db.query(
-        `INSERT INTO student (id, name, roll_number, class)
-         VALUES (?, ?, ?, ?)`,
-        [nextID, name, rollNo, className]
-      );
+        if (!name || !rollNo || !className) {
+          return res.status(400).json({
+            error: 'Invalid payload: name, rollNo, class required'
+          });
+        }
 
-      res.json({ message: 'Student added successfully' });
+        await db.query(
+          `INSERT INTO student (name, roll_number, class_name)
+           VALUES (?, ?, ?)`,
+          [name, rollNo, className]
+        );
+
+        res.status(201).json({ message: 'Student added successfully' });
+
+      } catch (err) {
+        console.error('❌ Error adding student:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
+
+    /* ---------------- Add Teacher ---------------- */
 
     app.post('/addteacher', async (req, res) => {
-      const { name, subject, class: className } = req.body;
-      const nextID = (await getLastTeacherID()) + 1;
+      try {
+        const { name, subject, class: className } = req.body;
 
-      await db.query(
-        `INSERT INTO teacher (id, name, subject, class)
-         VALUES (?, ?, ?, ?)`,
-        [nextID, name, subject, className]
-      );
+        if (!name || !subject || !className) {
+          return res.status(400).json({
+            error: 'Invalid payload'
+          });
+        }
 
-      res.json({ message: 'Teacher added successfully' });
+        await db.query(
+          `INSERT INTO teacher (name, subject, class)
+           VALUES (?, ?, ?)`,
+          [name, subject, className]
+        );
+
+        res.status(201).json({ message: 'Teacher added successfully' });
+
+      } catch (err) {
+        console.error('❌ Error adding teacher:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
+
+    /* ---------------- Delete Student ---------------- */
 
     app.delete('/student/:id', async (req, res) => {
-      const studentId = req.params.id;
-
-      await db.query('DELETE FROM student WHERE id = ?', [studentId]);
-
-      const [rows] = await db.query('SELECT id FROM student ORDER BY id');
-      await Promise.all(
-        rows.map((row, index) =>
-          db.query('UPDATE student SET id = ? WHERE id = ?', [index + 1, row.id])
-        )
-      );
-
-      res.json({ message: 'Student deleted successfully' });
+      try {
+        await db.query('DELETE FROM student WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Student deleted successfully' });
+      } catch (err) {
+        console.error('❌ Error deleting student:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
+
+    /* ---------------- Delete Teacher ---------------- */
 
     app.delete('/teacher/:id', async (req, res) => {
-      const teacherId = req.params.id;
-
-      await db.query('DELETE FROM teacher WHERE id = ?', [teacherId]);
-
-      const [rows] = await db.query('SELECT id FROM teacher ORDER BY id');
-      await Promise.all(
-        rows.map((row, index) =>
-          db.query('UPDATE teacher SET id = ? WHERE id = ?', [index + 1, row.id])
-        )
-      );
-
-      res.json({ message: 'Teacher deleted successfully' });
+      try {
+        await db.query('DELETE FROM teacher WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Teacher deleted successfully' });
+      } catch (err) {
+        console.error('❌ Error deleting teacher:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+      }
     });
+
+    /* ---------------- Graceful Shutdown ---------------- */
 
     process.on('SIGINT', async () => {
       console.log('🛑 Shutting down server...');
